@@ -101,10 +101,10 @@ class QueueMonitorProcessor(threading.Thread):
             if self.latest_frame is None:
                 placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
                 cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
-                _, jpeg = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                _, jpeg = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 return jpeg.tobytes()
-            # Use lower JPEG quality for reduced lag (85 instead of default 95)
-            success, jpeg = cv2.imencode('.jpg', self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            # Zero-lag: Aggressive JPEG compression for instant encoding
+            success, jpeg = cv2.imencode('.jpg', self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
             return jpeg.tobytes() if success else b''
 
     def run(self):
@@ -117,6 +117,9 @@ class QueueMonitorProcessor(threading.Thread):
             cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+            # Zero-lag optimizations
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
+            cap.set(cv2.CAP_PROP_FPS, 10)  # Ultra-low FPS for zero lag
             
             if not cap.isOpened():
                 logging.warning(f"Could not open QueueMonitor stream for {self.channel_name}, using placeholder")
@@ -142,7 +145,15 @@ class QueueMonitorProcessor(threading.Thread):
         is_file = any(self.rtsp_url.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mov'])
 
         while self.is_running:
-            ret, frame = cap.read()
+            # Aggressive frame skipping to get the absolute latest frame (zero lag)
+            if not is_file:
+                # Skip 3 frames instead of 2 for even lower latency
+                for _ in range(3):
+                    cap.grab()
+                ret, frame = cap.retrieve()
+            else:
+                ret, frame = cap.read()
+                
             if not ret:
                 if is_file:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -152,6 +163,8 @@ class QueueMonitorProcessor(threading.Thread):
                     time.sleep(5)
                     cap.release()
                     cap = cv2.VideoCapture(self.rtsp_url)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    cap.set(cv2.CAP_PROP_FPS, 10)
                     continue
             
             if self.frame_dimensions is None:
@@ -204,11 +217,40 @@ class QueueMonitorProcessor(threading.Thread):
             self.send_telegram(f"🚨 Queue Alert: {self.channel_name}\n{alert_message}")
             self.handle_detection('QueueMonitor', self.channel_id, [frame], alert_message, is_gif=False)
 
-        if self.roi_poly.is_valid and not self.roi_poly.is_empty: cv2.polylines(annotated_frame, [np.array(self.roi_poly.exterior.coords, dtype=np.int32)], True, (255, 255, 0), 2)
-        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty: cv2.polylines(annotated_frame, [np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)], True, (0, 255, 255), 2)
+        # Draw ROI polygons with enhanced visibility
+        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+            roi_points = np.array(self.roi_poly.exterior.coords, dtype=np.int32)
+            # Semi-transparent yellow overlay
+            overlay = annotated_frame.copy()
+            cv2.fillPoly(overlay, [roi_points], (0, 255, 255))  # Yellow fill
+            cv2.addWeighted(overlay, 0.15, annotated_frame, 0.85, 0, annotated_frame)
+            # Thick yellow border
+            cv2.polylines(annotated_frame, [roi_points], True, (0, 255, 255), 3)
+            # Add "QUEUE AREA" label
+            if len(roi_points) > 0:
+                label_x, label_y = int(roi_points[0][0]), int(roi_points[0][1]) - 10
+                cv2.putText(annotated_frame, "QUEUE AREA", (label_x, label_y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+            secondary_points = np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)
+            # Semi-transparent cyan overlay
+            overlay = annotated_frame.copy()
+            cv2.fillPoly(overlay, [secondary_points], (255, 255, 0))  # Cyan fill
+            cv2.addWeighted(overlay, 0.15, annotated_frame, 0.85, 0, annotated_frame)
+            # Thick cyan border
+            cv2.polylines(annotated_frame, [secondary_points], True, (255, 255, 0), 3)
+            # Add "COUNTER AREA" label
+            if len(secondary_points) > 0:
+                label_x, label_y = int(secondary_points[0][0]), int(secondary_points[0][1]) - 10
+                cv2.putText(annotated_frame, "COUNTER AREA", (label_x, label_y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
-        cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-        cv2.putText(annotated_frame, f"Counter Area: {people_in_secondary_roi}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        # Add stats overlay with better styling
+        cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (15, 40), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+        cv2.putText(annotated_frame, f"Counter: {people_in_secondary_roi}", (15, 85), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)
         with self.lock:
             self.latest_frame = annotated_frame.copy()
 

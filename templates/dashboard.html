@@ -440,15 +440,36 @@
             secondary: state.points.secondary.map(p => [p.x / canvas.width, p.y / canvas.height])
         };
         
-        const response = await fetch('/api/set_roi', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ app_name: appName, channel_id: channelId, roi_points: normalizedPoints })
-        });
-        
-        const result = await response.json();
-        alert(result.success ? 'ROI saved successfully!' : `Error: ${result.error}`);
-        if(result.success) cancelRoiEdit(appName, channelId);
+        try {
+            console.log('📤 Sending ROI data:', { app_name: appName, channel_id: channelId, roi_points: normalizedPoints });
+            
+            const response = await fetch('/api/set_roi', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ app_name: appName, channel_id: channelId, roi_points: normalizedPoints })
+            });
+            
+            console.log('📥 Response status:', response.status, response.statusText);
+            
+            if (!response.ok) {
+                throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            console.log('📊 Response data:', result);
+            
+            if (result.success) {
+                console.log('✅ SUCCESS: ROI saved');
+                alert('✅ ROI saved successfully!');
+                cancelRoiEdit(appName, channelId);
+            } else {
+                console.error('❌ ERROR:', result.error);
+                alert(`❌ Error: ${result.error || 'Unknown error'}`);
+            }
+        } catch (error) {
+            console.error('❌ EXCEPTION:', error);
+            alert(`❌ Failed to save ROI: ${error.message}\n\nPlease check:\n1. Server is running\n2. Network connection\n3. Browser console for details`);
+        }
     }
     
     function handleCanvasClick(event, appName, channelId) {
@@ -1064,20 +1085,46 @@
             alert_cooldown: parseInt(document.getElementById('queueAlertCooldown').value)
         };
         
-        const response = await fetch('/api/set_roi', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        try {
+            console.log('📤 Sending ROI data to server:', {
                 app_name: modalRoiState.appName,
                 channel_id: modalRoiState.channelId,
                 roi_points: normalizedPoints,
                 queue_settings: queueSettings
-            })
-        });
-        
-        const result = await response.json();
-        alert(result.success ? 'ROI and settings saved successfully! Changes will take effect immediately.' : `Error: ${result.error}`);
-        if (result.success) closeRoiModal();
+            });
+            
+            const response = await fetch('/api/set_roi', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    app_name: modalRoiState.appName,
+                    channel_id: modalRoiState.channelId,
+                    roi_points: normalizedPoints,
+                    queue_settings: queueSettings
+                })
+            });
+            
+            console.log('📥 Server response status:', response.status, response.statusText);
+            
+            if (!response.ok) {
+                throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            console.log('📊 Server response data:', result);
+            
+            if (result.success) {
+                console.log('✅ SUCCESS: ROI and settings saved to database');
+                alert('✅ ROI and settings saved successfully! Changes will take effect immediately.');
+                closeRoiModal();
+            } else {
+                console.error('❌ ERROR: Server returned error:', result.error);
+                alert(`❌ Error saving ROI: ${result.error || 'Unknown error'}`);
+            }
+        } catch (error) {
+            console.error('❌ EXCEPTION: Failed to save ROI:', error);
+            alert(`❌ Failed to save ROI: ${error.message}\n\nPlease check:\n1. Server is running\n2. Network connection\n3. Browser console for details`);
+        }
     }
 
     // --- Modal Line Editor Functions ---
@@ -1460,8 +1507,8 @@
                                 <h3>Schedule Management</h3>
                                 
                                 <div style="margin-bottom: 20px; padding: 15px; background: var(--bg-primary); border-radius: 6px;">
-                                    <label style="display: block; margin-bottom: 8px; font-weight: 600;">📊 Upload Schedule (.xlsx):</label>
-                                    <input type="file" id="schedule-file-${channel.id}" accept=".xlsx" style="width: 100%; padding: 10px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary);">
+                                    <label style="display: block; margin-bottom: 8px; font-weight: 600;">📊 Upload Schedule (.xlsx or .csv):</label>
+                                    <input type="file" id="schedule-file-${channel.id}" accept=".xlsx,.csv" style="width: 100%; padding: 10px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary);">
                                     <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="uploadOccupancySchedule('${channel.id}')">Upload Schedule</button>
                                     <small id="schedule-status-${channel.id}" style="display: block; margin-top: 8px; color: var(--text-secondary);">No schedule loaded</small>
                                 </div>
